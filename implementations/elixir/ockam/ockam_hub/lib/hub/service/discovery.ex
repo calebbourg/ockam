@@ -1,22 +1,10 @@
-defmodule Ockam.Hub.Service.Discovery.ServiceInfo do
-  @moduledoc """
-  Service info structure for discovery service.
-  """
-  defstruct [:id, :route, metadata: %{}]
-
-  @type t() :: %__MODULE__{
-          id: binary(),
-          route: [Ockam.Address.t()],
-          metadata: %{binary() => binary()}
-        }
-end
-
 defmodule Ockam.Hub.Service.Discovery do
   @moduledoc """
   Discovery service storing information about other services
 
   Options:
   storage: storage module to use, default is `Ockam.Hub.Service.Discovery.Storage.Memory`
+  storage_options: options to call storage.init/1 with
   """
 
   use Ockam.Worker
@@ -28,17 +16,12 @@ defmodule Ockam.Hub.Service.Discovery do
 
   require Logger
 
-  def register_service(registry_route, id, route, metadata \\ %{}) do
-    Logger.info("Registering #{inspect(id)}, #{inspect(route)} #{inspect(metadata)}")
-    payload = encode_register_request(id, metadata)
-    Router.route(payload, registry_route, route)
-  end
-
   @impl true
   def setup(options, state) do
     storage = Keyword.get(options, :storage, Ockam.Hub.Service.Discovery.Storage.Memory)
+    storage_options = Keyword.get(options, :storage_options, [])
 
-    {:ok, Map.put(state, :storage, {storage, storage.init()})}
+    {:ok, Map.put(state, :storage, {storage, storage.init(storage_options)})}
   end
 
   @impl true
@@ -169,12 +152,15 @@ defmodule Ockam.Hub.Service.Discovery do
     ]
   end
 
-  def encode_list_request() do
-    <<0>> <> BareExtended.encode({:list, ""}, request_schema())
-  end
-
-  def encode_register_request(id, metadata) do
-    <<0>> <> BareExtended.encode({:register, %{id: id, metadata: metadata}}, request_schema())
+  ## To be used with this schema, routes should be normalized to (type, value) maps
+  ## TODO: improve encode/decode logic to work with other address formats
+  def service_info_schema() do
+    {:struct,
+     [
+       id: :string,
+       route: Ockam.Wire.Binary.V2.bare_spec(:route),
+       metadata: {:map, :string, :data}
+     ]}
   end
 
   ## TODO: come up with better API for encoding/decoding of routes
@@ -193,65 +179,5 @@ defmodule Ockam.Hub.Service.Discovery do
   def normalize_service_info(%{route: route} = service_info) do
     normalized_route = Enum.map(route, fn address -> Ockam.Address.normalize(address) end)
     Map.put(service_info, :route, normalized_route)
-  end
-
-  ## To be used with this schema, routes should be normalized to (type, value) maps
-  ## TODO: improve encode/decode logic to work with other address formats
-  def service_info_schema() do
-    {:struct,
-     [
-       id: :string,
-       route: Ockam.Wire.Binary.V2.bare_spec(:route),
-       metadata: {:map, :string, :data}
-     ]}
-  end
-end
-
-defmodule Ockam.Hub.Service.Discovery.Storage do
-  @moduledoc """
-  Storage module behaviour for discovery service
-  """
-  alias Ockam.Hub.Service.Discovery.ServiceInfo
-
-  @type storage_state() :: any()
-  @type metadata() :: %{binary() => binary()}
-
-  @callback init() :: storage_state()
-  @callback list(storage_state()) :: [ServiceInfo.t()]
-  @callback get(id :: binary(), storage_state()) :: {:ok, ServiceInfo.t()} | {:error, :not_found}
-  @callback register(id :: binary(), route :: [Ockam.Address.t()], metadata(), storage_state()) ::
-              :ok | {:error, reason :: any()}
-end
-
-defmodule Ockam.Hub.Service.Discovery.Storage.Memory do
-  @moduledoc """
-  In-memory storage for discovery service.
-  Stores registered workers as a map of %{id => ServiceInfo}
-  """
-  @behaviour Ockam.Hub.Service.Discovery.Storage
-
-  alias Ockam.Hub.Service.Discovery.ServiceInfo
-
-  @type storage_state() :: %{binary() => ServiceInfo.t()}
-
-  def init() do
-    %{}
-  end
-
-  def get(id, state) do
-    case Map.fetch(state, id) do
-      {:ok, result} -> {{:ok, result}, state}
-      :error -> {{:error, :not_found}, state}
-    end
-  end
-
-  def list(state) do
-    {Map.values(state), state}
-  end
-
-  def register(id, route, metadata, state) do
-    ## TODO: option to override or ignore?
-    new_state = Map.put(state, id, %ServiceInfo{id: id, route: route, metadata: metadata})
-    {:ok, new_state}
   end
 end

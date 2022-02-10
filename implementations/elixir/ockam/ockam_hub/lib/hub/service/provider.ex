@@ -9,7 +9,7 @@ defmodule Ockam.Hub.Service.Provider do
   with :ockam_hub => :providers provider implementations
   """
 
-  alias Ockam.Hub.Service.Discovery, as: ServiceDiscovery
+  alias Ockam.Workers.DiscoveryClient, as: ServiceDiscoveryClient
 
   require Logger
 
@@ -86,17 +86,17 @@ defmodule Ockam.Hub.Service.Provider do
     end
   end
 
-  def start_service(service_config, providers \\ nil) do
+  def start_service(service_config, providers \\ nil, supervisor \\ @supervisor) do
     case get_service_child_spec(service_config, providers) do
       {:ok, child_spec} ->
-        start_child(child_spec)
+        Supervisor.start_child(supervisor, child_spec)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  def start_configured_service(service_name, extra_args \\ []) do
+  def start_configured_service(service_name, extra_args \\ [], supervisor \\ @supervisor) do
     services = get_configured_services()
 
     case Keyword.get(services, service_name) do
@@ -104,42 +104,29 @@ defmodule Ockam.Hub.Service.Provider do
         {:error, :service_not_configured}
 
       default_args ->
-        start_service({service_name, Keyword.merge(default_args, extra_args)})
+        start_service({service_name, Keyword.merge(default_args, extra_args)}, nil, supervisor)
     end
   end
 
-  def start_child(child_spec) do
-    Supervisor.start_child(@supervisor, child_spec)
-  end
-
   def start_registered_service(id, {m, f, a}) do
+    ## TODO: only register services if service discovery is active
     case apply(m, f, a) do
       {:ok, pid} ->
-        ## TODO: handle errors
-        register_service(id, pid)
         {:ok, pid}
 
-      {:ok, pid, info} ->
+      {:ok, pid, service_api_address} ->
         ## TODO: handle errors
-        register_service(id, pid)
-        {:ok, pid, info}
+        name = to_string(id)
+
+        ServiceDiscoveryClient.register_service(@discovery_service_route, name, [
+          service_api_address
+        ])
+
+        {:ok, pid, service_api_address}
 
       other ->
         Logger.info("Other: #{inspect(other)}")
         other
-    end
-  end
-
-  def register_service(id, pid) do
-    name = to_string(id)
-
-    case :sys.get_state(pid) do
-      %{address: address} ->
-        ServiceDiscovery.register_service(@discovery_service_route, name, [address])
-
-      _ ->
-        Logger.warn("No address registered for service worker: #{inspect({id, pid})}")
-        {:error, :no_address}
     end
   end
 

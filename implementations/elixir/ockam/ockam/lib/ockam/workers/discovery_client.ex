@@ -4,7 +4,7 @@ defmodule Ockam.Workers.DiscoveryClient do
   alias Ockam.Bare.Extended, as: BareExtended
   alias Ockam.Router
 
-  def register(discovery_route, id, route, metadata \\ %{}) do
+  def register_service(discovery_route, id, route, metadata \\ %{}) do
     Logger.info("Registering #{inspect(id)}, #{inspect(route)} #{inspect(metadata)}")
     payload = encode_register_request(id, metadata)
     Router.route(payload, discovery_route, route)

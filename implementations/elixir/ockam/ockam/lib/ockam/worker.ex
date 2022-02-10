@@ -24,6 +24,10 @@ defmodule Ockam.Worker do
     end
   end
 
+  def get_address(worker, timeout \\ 5000) do
+    call(worker, :get_address, timeout)
+  end
+
   defmacro __using__(_options) do
     quote do
       # use GenServer, makes this module a GenServer.
@@ -142,6 +146,11 @@ defmodule Ockam.Worker do
               {:stop, reason, base_state}
           end
         end
+      end
+
+      @impl true
+      def handle_call(:get_address, _from, %{address: address} = state) do
+        {:reply, address, state}
       end
 
       @doc false

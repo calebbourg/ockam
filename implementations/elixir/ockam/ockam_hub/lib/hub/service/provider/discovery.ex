@@ -17,6 +17,15 @@ defmodule Ockam.Hub.Service.Provider.Discovery do
 
   @impl true
   def child_spec(:discovery, args) do
-    {DiscoveryService, Keyword.merge([address: "discovery_service"], args)}
+    {DiscoveryService,
+     Keyword.merge(
+       [
+         address: "discovery_service",
+         storage: Ockam.Hub.Service.Discovery.Storage.Supervisor,
+         ## TODO: provide superviser from args
+         storage_options: [supervisor: Ockam.Hub]
+       ],
+       args
+     )}
   end
 end
