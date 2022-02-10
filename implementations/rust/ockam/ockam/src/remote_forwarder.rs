@@ -34,27 +34,65 @@ impl RemoteForwarderInfo {
     }
 }
 
+enum RemoteForwarderState {
+    PubSub { name: String, topic: String },
+    Forwarder,
+}
+
 /// This Worker is responsible for registering on Ockam Hub and forwarding messages to local Worker
 pub struct RemoteForwarder {
-    route: Route,
+    state: RemoteForwarderState,
+    hub_addr: Address,
     destination: Route,
     callback_address: Address,
 }
 
 impl RemoteForwarder {
     fn new(
-        hub_addr: impl Into<Address>,
+        state: RemoteForwarderState,
+        hub_addr: Address,
         destination: impl Into<Address>,
         callback_address: Address,
     ) -> Self {
         Self {
-            route: route![hub_addr, "forwarding_service"],
+            state,
+            hub_addr,
             destination: route![destination],
             callback_address,
         }
     }
 
-    /// Create and start new RemoteForwarder with given Ockam Hub address
+    /// Create and start static RemoteForwarder at predefined address with given Ockam Hub address
+    /// and Address of destination Worker that should receive forwarded messages
+    pub async fn create_static(
+        ctx: &Context,
+        hub_addr: impl Into<Address>,
+        destination: impl Into<Address>,
+        name: impl Into<String>,
+        topic: impl Into<String>,
+    ) -> Result<RemoteForwarderInfo> {
+        let address: Address = random();
+        let mut child_ctx = ctx.new_context(address).await?;
+        let state = RemoteForwarderState::PubSub {
+            name: name.into(),
+            topic: topic.into(),
+        };
+        let forwarder = Self::new(state, hub_addr.into(), destination, child_ctx.address());
+
+        let worker_address: Address = random();
+        debug!("Starting static RemoteForwarder at {}", &worker_address);
+        ctx.start_worker(worker_address, forwarder).await?;
+
+        let resp = child_ctx
+            .receive::<RemoteForwarderInfo>()
+            .await?
+            .take()
+            .body();
+
+        Ok(resp)
+    }
+
+    /// Create and start new ephemeral RemoteForwarder at random address with given Ockam Hub address
     /// and Address of destination Worker that should receive forwarded messages
     pub async fn create(
         ctx: &Context,
@@ -63,10 +101,15 @@ impl RemoteForwarder {
     ) -> Result<RemoteForwarderInfo> {
         let address: Address = random();
         let mut child_ctx = ctx.new_context(address).await?;
-        let forwarder = Self::new(hub_addr, destination, child_ctx.address());
+        let forwarder = Self::new(
+            RemoteForwarderState::Forwarder,
+            hub_addr.into(),
+            destination,
+            child_ctx.address(),
+        );
 
         let worker_address: Address = random();
-        debug!("Starting RemoteForwarder at {}", &worker_address);
+        debug!("Starting ephemeral RemoteForwarder at {}", &worker_address);
         ctx.start_worker(worker_address, forwarder).await?;
 
         let resp = child_ctx
@@ -85,15 +128,29 @@ impl Worker for RemoteForwarder {
     type Message = Any;
 
     async fn initialize(&mut self, ctx: &mut Self::Context) -> Result<()> {
-        debug!("RemoteForwarder registering...");
-        ctx.send(self.route.clone(), "register".to_string()).await?;
+        debug!("RemoteForwarder registration...");
+
+        let (route, payload) = match &self.state {
+            RemoteForwarderState::Forwarder => (
+                route![self.hub_addr.clone(), "forwarding_service"],
+                "register".to_string(),
+            ),
+            RemoteForwarderState::PubSub { name, topic } => (
+                route![self.hub_addr.clone(), "pub_sub_service"],
+                format!("{}:{}", name, topic),
+                // TODO: Start periodic pings
+            ),
+        };
+
+        ctx.send(route, payload.clone()).await?;
+
         let resp = ctx.receive::<String>().await?.take();
         let route = resp.return_route();
         let resp = resp.body();
-        match resp.as_str() {
-            "register" => self.route = route.clone(),
-            _ => return Err(OckamError::InvalidHubResponse.into()),
+        if resp != payload {
+            return Err(OckamError::InvalidHubResponse.into());
         }
+
         info!("RemoteForwarder registered with route: {}", route);
         let address;
         if let Some(a) = route.clone().recipient().to_string().strip_prefix("0#") {
