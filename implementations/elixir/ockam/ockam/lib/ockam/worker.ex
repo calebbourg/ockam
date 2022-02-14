@@ -124,6 +124,8 @@ defmodule Ockam.Worker do
       @doc false
       @impl true
       def handle_continue(:post_init, options) do
+        Node.set_address_module(Keyword.fetch!(options, :address), __MODULE__)
+
         metadata = %{address: Keyword.get(options, :address)}
         start_time = Telemetry.emit_start_event([__MODULE__, :init], metadata: metadata)
 

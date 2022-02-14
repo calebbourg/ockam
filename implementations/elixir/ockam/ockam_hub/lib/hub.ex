@@ -35,7 +35,10 @@ defmodule Ockam.Hub do
         {
           :telemetry_poller,
           [
-            period: :timer.seconds(5)
+            period: :timer.seconds(10),
+            measurements: [
+              {Ockam.Hub.TelemetryPoller, :dispatch_worker_count, []}
+            ]
           ]
         },
         # Add a TCP listener
@@ -100,6 +103,7 @@ defmodule Ockam.Hub do
   end
 
   defp influxdb_telemetry_config() do
+
     %{
       id: TelemetryInfluxDB,
       start: {
@@ -131,6 +135,10 @@ defmodule Ockam.Hub do
                   :ets,
                   :maximum
                 ]
+              },
+              %{
+                name: [:ockam, :workers, :type],
+                metadata_tag_keys: [:type]
               },
               %{
                 name: [:vm, :total_run_queue_lengths],
@@ -174,7 +182,7 @@ defmodule Ockam.Hub do
               },
               %{
                 name: [:ockam, Ockam.Node, :handle_local_message, :start],
-                metadata_tag_keys: [:message, :return_value]
+                metadata_tag_keys: [:from, :to, :return_value]
               },
               %{
                 name: [:ockam, Ockam.Hub.Service.Echo, :handle_message, :start],

@@ -33,24 +33,49 @@ defmodule Ockam.Node do
     end
   end
 
-  def register_address(address) do
-    Registry.register_name(address, self())
+  @spec register_address(any(), module()) :: :ok | {:error, any()}
+  @doc """
+  Registers the address of the current process with optional module name
+  """
+  def register_address(address, module \\ nil) do
+    Registry.register(address, module)
   end
 
+  @spec set_address_module(any(), module()) :: :ok | :error
   @doc """
-  Registers the address of a `pid`.
+  Sets module name for already registered process
   """
-  defdelegate register_address(address, pid), to: Registry, as: :register_name
+  def set_address_module(address, module) do
+    Registry.set_module(address, module)
+  end
 
+  @spec unregister_address(any()) :: :ok
   @doc """
   Unregisters an address.
   """
   defdelegate unregister_address(address), to: Registry, as: :unregister_name
 
+  @spec list_addresses() :: [address :: any()]
   @doc """
   Lists all registered addresses
   """
   defdelegate list_addresses(), to: Registry, as: :list_names
+
+  @spec list_workers() :: [{address :: any(), pid(), module()}]
+  @doc """
+  Lists all workers with their primary address, worker pid and module
+  """
+  ## TODO: currently taking just one random address per pid, make sure it's primary
+  def list_workers() do
+    list_addresses()
+    |> Enum.flat_map(fn(address) ->
+      case Registry.lookup(address) do
+        {:ok, pid, module} -> [{address, pid, module}]
+        :error -> []
+      end
+    end)
+    |> Enum.uniq_by(fn({_address, pid, _module}) -> pid end)
+  end
 
   @doc """
   Send a message to the process registered with an address.
@@ -63,16 +88,22 @@ defmodule Ockam.Node do
     end
   end
 
-  def register_random_address(prefix \\ "", length_in_bytes \\ @default_address_length_in_bytes) do
+  @spec register_random_address(prefix :: String.t(), module(), length_in_bytes :: integer()) :: {:ok, address :: any()} | {:error, any()}
+  @doc """
+  Registers random address of certain length using set prefix and module name
+  """
+  ## TODO: make address actually fit into length in bytes
+  def register_random_address(prefix \\ "", module \\ nil, length_in_bytes \\ @default_address_length_in_bytes) do
     address = get_random_unregistered_address(prefix, length_in_bytes)
 
-    case register_address(address) do
-      :yes -> {:ok, address}
+    case register_address(address, module) do
+      :ok -> {:ok, address}
       ## TODO: recursion limit
-      :no -> register_random_address(prefix, length_in_bytes)
+      {:error, _reason} -> register_random_address(prefix, module, length_in_bytes)
     end
   end
 
+  @spec get_random_unregistered_address(prefix :: String.t(), length_in_bytes :: integer()) :: binary()
   @doc """
   Returns a random address that is currently not registed on the node.
   """
@@ -147,7 +178,10 @@ defmodule Ockam.Node do
   end
 
   def handle_local_message(%Ockam.Message{} = message) do
-    metadata = %{message: message}
+    to = Message.onward_route(message) |> Enum.at(0)
+    from = Message.return_route(message) |> Enum.at(0)
+
+    metadata = %{from: from, to: to, message: message}
 
     start_time =
       Telemetry.emit_start_event([__MODULE__, :handle_local_message], metadata: metadata)
