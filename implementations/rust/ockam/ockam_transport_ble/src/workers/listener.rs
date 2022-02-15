@@ -11,8 +11,6 @@ use crate::BleAddr;
 
 /// BleListenProcessor
 pub struct BleListenProcessor<A>
-where
-    A: BleServerDriver + BleStreamDriver + Send + 'static,
 {
     inner: Option<BleServer<A>>,
     router_handle: BleRouterHandle,

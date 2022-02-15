@@ -33,8 +33,6 @@ impl WorkerPair {
 /// worker pair, and listens for messages from the node message system
 /// to dispatch to a remote peer.
 pub(crate) struct BleSendWorker<A>
-where
-    A: BleStreamDriver + Send + 'static,
 {
     rx_stream: Option<Source<A>>,
     tx_stream: Option<Sink<A>>,

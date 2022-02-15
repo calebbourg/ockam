@@ -100,10 +100,7 @@ pub trait BleStreamDriver {
 
 /// A BLE client that initiates GATT commands and requests, and
 /// accepts responses from a BLE server.
-pub struct BleClient<A>
-where
-    A: BleClientDriver + BleStreamDriver + Send,
-{
+pub struct BleClient<A> {
     inner: A,
 }
 
@@ -146,10 +143,7 @@ where
 
 /// A BLE server that receives GATT commands and requests, and returns
 /// responses to a BLE client.
-pub struct BleServer<A>
-where
-    A: BleServerDriver + BleStreamDriver + Send,
-{
+pub struct BleServer<A> {
     inner: A,
 }
 

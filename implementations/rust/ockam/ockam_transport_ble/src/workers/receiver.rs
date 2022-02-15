@@ -14,8 +14,6 @@ use crate::driver::{BleEvent, BleStreamDriver, PacketBuffer};
 /// pair, and listens for incoming BLE events, to relay into the node
 /// message system.
 pub struct BleRecvProcessor<A>
-where
-    A: BleStreamDriver + Send + 'static,
 {
     rx_stream: Source<A>,
     peer_addr: Address,
