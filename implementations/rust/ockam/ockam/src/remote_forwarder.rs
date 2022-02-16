@@ -7,7 +7,7 @@ use ockam_core::compat::{
     string::{String, ToString},
     vec::Vec,
 };
-use ockam_core::{Address, Any, LocalMessage, Result, Route, Routed, TransportMessage, Worker};
+use ockam_core::{Address, Any, Decodable, Result, Route, Routed, Worker};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
@@ -34,31 +34,23 @@ impl RemoteForwarderInfo {
     }
 }
 
-enum RemoteForwarderState {
-    PubSub { name: String, topic: String },
-    Forwarder,
-}
-
 /// This Worker is responsible for registering on Ockam Hub and forwarding messages to local Worker
 pub struct RemoteForwarder {
-    state: RemoteForwarderState,
-    hub_addr: Address,
-    destination: Route,
-    callback_address: Address,
+    registration_route: Route,
+    registration_payload: String,
+    callback_address: Option<Address>,
 }
 
 impl RemoteForwarder {
     fn new(
-        state: RemoteForwarderState,
-        hub_addr: Address,
-        destination: impl Into<Address>,
+        registration_route: Route,
+        registration_payload: String,
         callback_address: Address,
     ) -> Self {
         Self {
-            state,
-            hub_addr,
-            destination: route![destination],
-            callback_address,
+            registration_route,
+            registration_payload,
+            callback_address: Some(callback_address),
         }
     }
 
@@ -67,17 +59,17 @@ impl RemoteForwarder {
     pub async fn create_static(
         ctx: &Context,
         hub_addr: impl Into<Address>,
-        destination: impl Into<Address>,
         name: impl Into<String>,
         topic: impl Into<String>,
     ) -> Result<RemoteForwarderInfo> {
         let address: Address = random();
         let mut child_ctx = ctx.new_context(address).await?;
-        let state = RemoteForwarderState::PubSub {
-            name: name.into(),
-            topic: topic.into(),
-        };
-        let forwarder = Self::new(state, hub_addr.into(), destination, child_ctx.address());
+
+        let forwarder = Self::new(
+            route![hub_addr.into(), "pub_sub_service"],
+            format!("{}:{}", name.into(), topic.into()),
+            child_ctx.address(),
+        );
 
         let worker_address: Address = random();
         debug!("Starting static RemoteForwarder at {}", &worker_address);
@@ -97,14 +89,12 @@ impl RemoteForwarder {
     pub async fn create(
         ctx: &Context,
         hub_addr: impl Into<Address>,
-        destination: impl Into<Address>,
     ) -> Result<RemoteForwarderInfo> {
         let address: Address = random();
         let mut child_ctx = ctx.new_context(address).await?;
         let forwarder = Self::new(
-            RemoteForwarderState::Forwarder,
-            hub_addr.into(),
-            destination,
+            route![hub_addr.into(), "forwarding_service"],
+            "register".to_string(),
             child_ctx.address(),
         );
 
@@ -130,42 +120,9 @@ impl Worker for RemoteForwarder {
     async fn initialize(&mut self, ctx: &mut Self::Context) -> Result<()> {
         debug!("RemoteForwarder registration...");
 
-        let (route, payload) = match &self.state {
-            RemoteForwarderState::Forwarder => (
-                route![self.hub_addr.clone(), "forwarding_service"],
-                "register".to_string(),
-            ),
-            RemoteForwarderState::PubSub { name, topic } => (
-                route![self.hub_addr.clone(), "pub_sub_service"],
-                format!("{}:{}", name, topic),
-                // TODO: Start periodic pings
-            ),
-        };
-
-        ctx.send(route, payload.clone()).await?;
-
-        let resp = ctx.receive::<String>().await?.take();
-        let route = resp.return_route();
-        let resp = resp.body();
-        if resp != payload {
-            return Err(OckamError::InvalidHubResponse.into());
-        }
-
-        info!("RemoteForwarder registered with route: {}", route);
-        let address;
-        if let Some(a) = route.clone().recipient().to_string().strip_prefix("0#") {
-            address = a.to_string();
-        } else {
-            return Err(OckamError::InvalidHubResponse.into());
-        }
-
         ctx.send(
-            self.callback_address.clone(),
-            RemoteForwarderInfo {
-                forwarding_route: route,
-                remote_address: address,
-                worker_address: ctx.address(),
-            },
+            self.registration_route.clone(),
+            self.registration_payload.clone(),
         )
         .await?;
 
@@ -177,13 +134,57 @@ impl Worker for RemoteForwarder {
         ctx: &mut Context,
         msg: Routed<Self::Message>,
     ) -> Result<()> {
-        let return_route = msg.return_route();
-        let payload = msg.into_transport_message().payload;
-        debug!("RemoteForwarder received message");
+        if msg.onward_route().recipient() == ctx.address() {
+            debug!("RemoteForwarder received service message");
 
-        let msg = TransportMessage::v1(self.destination.clone(), return_route, payload);
+            let payload =
+                Vec::<u8>::decode(msg.payload()).map_err(|_| OckamError::InvalidHubResponse)?;
+            let payload = String::from_utf8(payload).map_err(|_| OckamError::InvalidHubResponse)?;
+            if payload != self.registration_payload {
+                return Err(OckamError::InvalidHubResponse.into());
+            }
 
-        ctx.forward(LocalMessage::new(msg, Vec::new())).await?;
+            if let Some(callback_address) = self.callback_address.take() {
+                let route = msg.return_route();
+
+                info!("RemoteForwarder registered with route: {}", route);
+                let address;
+                if let Some(a) = route.clone().recipient().to_string().strip_prefix("0#") {
+                    address = a.to_string();
+                } else {
+                    return Err(OckamError::InvalidHubResponse.into());
+                }
+
+                ctx.send(
+                    callback_address,
+                    RemoteForwarderInfo {
+                        forwarding_route: route,
+                        remote_address: address,
+                        worker_address: ctx.address(),
+                    },
+                )
+                .await?;
+            }
+
+            // TODO: Start periodic pings
+        } else {
+            debug!("RemoteForwarder received payload message");
+
+            let mut message = msg.into_local_message();
+            let transport_message = message.transport_mut();
+
+            // Remove my address from the onward_route
+            transport_message.onward_route.step()?;
+
+            // Insert my address at the beginning return_route
+            transport_message
+                .return_route
+                .modify()
+                .prepend(ctx.address());
+
+            // Send the message on its onward_route
+            ctx.forward(message).await?;
+        }
 
         Ok(())
     }
@@ -224,13 +225,13 @@ mod test {
         TcpTransport::create(&ctx).await?;
 
         let node_in_hub = (TCP, cloud_address);
-        let remote_info = RemoteForwarder::create(ctx, node_in_hub.clone(), "echoer").await?;
+        let remote_info = RemoteForwarder::create(ctx, node_in_hub.clone()).await?;
 
         let mut child_ctx = ctx.new_context(Address::random(0)).await?;
 
         child_ctx
             .send(
-                route![node_in_hub, remote_info.remote_address()],
+                route![node_in_hub, remote_info.remote_address(), "echoer"],
                 "Hello".to_string(),
             )
             .await?;
@@ -259,14 +260,13 @@ mod test {
 
         let node_in_hub = (TCP, cloud_address);
         let remote_info =
-            RemoteForwarder::create_static(ctx, node_in_hub.clone(), "echoer", "name", "topic")
-                .await?;
+            RemoteForwarder::create_static(ctx, node_in_hub.clone(), "name", "topic").await?;
 
         let mut child_ctx = ctx.new_context(Address::random(0)).await?;
 
         child_ctx
             .send(
-                route![node_in_hub, remote_info.remote_address()],
+                route![node_in_hub, remote_info.remote_address(), "echoer"],
                 "Hello".to_string(),
             )
             .await?;
