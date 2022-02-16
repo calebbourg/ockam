@@ -1512,6 +1512,7 @@ dependencies = [
 name = "ockam_node"
 version = "0.45.0"
 dependencies = [
+ "futures 0.3.19",
  "heapless",
  "ockam_core",
  "ockam_executor",
